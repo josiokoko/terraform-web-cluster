@@ -3,14 +3,28 @@ provider "aws" {
 }
 
 
-resource "aws_instance" "web_server" {
-  ami                    = "ami-0c02fb55956c7d316"
-  instance_type          = "t2.micro"
-  user_data              = file("scripts/app.sh")
-  vpc_security_group_ids = [aws_security_group.web_ec2_sg.id]
+resource "aws_launch_configuration" "l_config" {
+  image_id        = var.web_amis[var.region]
+  instance_type   = var.ec2_instance_type
+  user_data       = file("scripts/app.sh")
+  security_groups = [aws_security_group.web_ec2_sg.id]
 
-  tags = {
-    Name = "web-server-${terraform.workspace}"
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+
+resource "aws_autoscaling_group" "web_asg" {
+  launch_configuration = aws_launch_configuration.l_config.name
+  vpc_zone_identifier  = local.public_subnets_ids
+  min_size             = 2
+  max_size             = 10
+
+  tag {
+    key                 = "Name"
+    value               = "web-server-${terraform.workspace}"
+    propagate_at_launch = true
   }
 }
 
@@ -46,27 +60,56 @@ resource "aws_security_group" "web_ec2_sg" {
 }
 
 
-resource "aws_launch_configuration" "l_config" {
-  image_id        = "ami-0c02fb55956c7d316"
-  instance_type   = var.ec2_instance_type
-  user_data       = file("scripts/app.sh")
-  security_groups = [aws_security_group.web_ec2_sg.id]
+#################################################
+#### Application Load Balancer ##################
+#################################################
 
-  lifecycle {
-    create_before_destroy = true
+resource "aws_lb" "web_cluster" {
+  name               = "wb-cluster-lb"
+  load_balancer_type = "application"
+  subnets            = local.public_subnets_ids
+  security_groups    = [aws_security_group.alb.id]
+}
+
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.web_cluster.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type = "fixed-response"
+
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "404: Page not found!"
+      status_code  = "404"
+    }
   }
 }
 
 
-resource "aws_autoscaling_group" "web_asg" {
-  launch_configuration = aws_launch_configuration.l_config.name
-  vpc_zone_identifier  = data.aws_subnet_ids.default.ids
-  min_size             = 2
-  max_size             = 5
+resource "aws_security_group" "alb" {
+  name   = "alb-security-group"
+  vpc_id = aws_vpc.main_vpc.id
 
-  tag {
-    key                 = "Name"
-    value               = "web-server-${terraform.workspace}"
-    propagate_at_launch = true
+  # Allow inbound HTTP requests
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  # All outgoing requests
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "alb-security-group-${terraform.workspace}"
   }
 }
