@@ -18,8 +18,12 @@ resource "aws_launch_configuration" "l_config" {
 resource "aws_autoscaling_group" "web_asg" {
   launch_configuration = aws_launch_configuration.l_config.name
   vpc_zone_identifier  = local.public_subnets_ids
-  min_size             = 2
-  max_size             = 10
+
+  target_group_arns = [aws_lb_target_group.asg.arn]
+  health_check_type = "ELB"
+
+  min_size = 2
+  max_size = 10
 
   tag {
     key                 = "Name"
@@ -30,7 +34,8 @@ resource "aws_autoscaling_group" "web_asg" {
 
 
 resource "aws_security_group" "web_ec2_sg" {
-  name = "web-instance-sg"
+  name   = "web-instance-sg"
+  vpc_id = aws_vpc.main_vpc.id
 
   ingress {
     description = "Accept incoming traffic from anywhere"
@@ -111,5 +116,41 @@ resource "aws_security_group" "alb" {
 
   tags = {
     Name = "alb-security-group-${terraform.workspace}"
+  }
+}
+
+
+
+resource "aws_lb_target_group" "asg" {
+  name     = "web-cluster-lb-alb-tg"
+  port     = var.server_port
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.main_vpc.id
+
+  health_check {
+    path                = "/"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 15
+    timeout             = 3
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+
+resource "aws_lb_listener_rule" "asg" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 100
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.asg.arn
+  }
+
+  condition {
+    path_pattern {
+      values = ["*"]
+    }
   }
 }
